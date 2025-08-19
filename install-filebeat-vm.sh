@@ -12,18 +12,54 @@
 #
 # Autor: Erivando Sena<erivandosena@gmail.com>
 # Data: 2023-10-20
-# Versão: 1.0
+# Versão: 1.1
 
-# Ajuste aos hosts reais (Domains/IP/port)
-# Logstash (input Beats) do cluster K8S – 10.130.1.115:5044
-# Elasticsearch (API HTTP/REST) – 10.130.1.114:9200
-# IP VM monitorada (nfs-conteirner no caso deste template) – 10.130.0.253
-# Endpoint HTTP de métricas do Filebeat — bind 0.0.0.0 (porta padrão 5066)
-# Socket local do Docker para enriquecer eventos — unix:///var/run/docker.sock
+# ============================== PARÂMETROS DE CONFIGURAÇÃO ===============================
+# Ajustar parâmetros abaixo conforme ambiente
+
+# Cluster K8S - ELK Stack
+LOGSTASH_HOST="10.130.1.115"
+LOGSTASH_PORT="5044"
+ELASTICSEARCH_HOST="10.130.1.114"
+ELASTICSEARCH_PORT="9200"
+
+# VM monitorada
+VM_HOSTNAME="nfs-conteirner"
+VM_IP="10.130.0.253"
+VM_OS="Debian GNU/Linux"
+VM_KERNEL="5.10.0-9-amd64"
+VM_ROLE="nfs_server"
+
+# Ambiente e Datacenter
+ENVIRONMENT="production"
+DATACENTER="observabilidade"
+CLUSTER_NAME="external"
+
+# Configurações do Filebeat
+FILEBEAT_VERSION="7.10.2"
+FILEBEAT_HTTP_HOST="0.0.0.0"
+FILEBEAT_HTTP_PORT="5066"
+
+# Configurações de Performance
+BULK_MAX_SIZE="2048"
+WORKER_COUNT="2"
+COMPRESSION_LEVEL="3"
+CONNECTION_TIMEOUT="30s"
+QUEUE_EVENTS="4096"
+QUEUE_FLUSH_MIN="512"
+QUEUE_FLUSH_TIMEOUT="5s"
+
+# Configurações de Log
+LOG_RETENTION_DAYS="7"
+LOG_MAX_SIZE_MB="10"
+IGNORE_OLDER_HOURS="48h"
+DOCKER_IGNORE_OLDER_HOURS="24h"
+
+# ============================== INÍCIO DO SCRIPT ===============================
 
 set -e
 
-echo "=== Instalação do Filebeat 7.10.2 ==="
+echo "=== Instalação do Filebeat $FILEBEAT_VERSION ==="
 echo "VM: $(hostname) - $(uname -a)"
 echo "Data: $(date)"
 echo
@@ -36,19 +72,19 @@ fi
 
 # Verificar conectividade com o Logstash
 echo "Verificando conectividade com Logstash..."
-if nc -z 10.130.1.115 5044 2>/dev/null; then
-    echo "✓ Conectividade com Logstash OK (10.130.1.115:5044)"
+if nc -z $LOGSTASH_HOST $LOGSTASH_PORT 2>/dev/null; then
+    echo "✓ Conectividade com Logstash OK ($LOGSTASH_HOST:$LOGSTASH_PORT)"
 else
-    echo "Aviso: Não foi possível conectar com Logstash (10.130.1.115:5044)"
+    echo "Aviso: Não foi possível conectar com Logstash ($LOGSTASH_HOST:$LOGSTASH_PORT)"
     echo "Continuando a instalação..."
 fi
 
 # Verificar conectividade com Elasticsearch
 echo "Verificando conectividade com Elasticsearch..."
-if nc -z 10.130.1.114 9200 2>/dev/null; then
-    echo "✓ Conectividade com Elasticsearch OK (10.130.1.114:9200)"
+if nc -z $ELASTICSEARCH_HOST $ELASTICSEARCH_PORT 2>/dev/null; then
+    echo "✓ Conectividade com Elasticsearch OK ($ELASTICSEARCH_HOST:$ELASTICSEARCH_PORT)"
 else
-    echo "Aviso: Não foi possível conectar com Elasticsearch (10.130.1.114:9200)"
+    echo "Aviso: Não foi possível conectar com Elasticsearch ($ELASTICSEARCH_HOST:$ELASTICSEARCH_PORT)"
     echo "Continuando a instalação..."
 fi
 
@@ -57,19 +93,6 @@ echo
 # Atualizar sistema
 echo "Atualizando sistema Debian..."
 apt-get update -q
-
-# # Instalar dependências
-# echo "Instalando dependências..."
-# apt-get install -y wget curl gnupg apt-transport-https ca-certificates netcat
-
-# # Adicionar repositório Elastic
-# echo "Adicionando repositório Elastic..."
-# wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | apt-key add -
-# echo "deb https://artifacts.elastic.co/packages/7.x/apt stable main" | tee /etc/apt/sources.list.d/elastic-7.x.list
-
-# # Atualizar cache do apt
-# apt-get update -q
-
 
 # Instalar dependências
 echo "Instalando dependências..."
@@ -88,7 +111,7 @@ echo "deb [signed-by=/usr/share/keyrings/elastic-keyring.gpg] https://artifacts.
 apt-get update -q
 
 # Instalar Filebeat 7.10.2
-apt-get install -y filebeat=7.10.2
+apt-get install -y filebeat=$FILEBEAT_VERSION
 
 # Atualizar cache do apt
 apt-get update -q
@@ -137,10 +160,10 @@ echo
 
 # Aplicar configuração do Filebeat
 echo "Aplicando configuração do Filebeat..."
-cat > /etc/filebeat/filebeat.yml << 'EOF'
+cat > /etc/filebeat/filebeat.yml << EOF
 ################### Filebeat Configuration for VM #####################
 # Arquivo: /etc/filebeat/filebeat.yml
-# VM Debian 5.10.0-9-amd64
+# VM $VM_OS
 # Destino: Stack ELK no cluster K8S / Logstash
 #######################################################################
 
@@ -157,14 +180,14 @@ filebeat.inputs:
       - /var/log/messages
       - /var/log/dpkg.log
       - /var/log/apt/history.log
-    ignore_older: 48h
+    ignore_older: $IGNORE_OLDER_HOURS
     fields:
       index_name: "nfs-system-logs"
       source_type: "system_log"
-      host_type: "nfs_server"
-      environment: "production"
-      cluster: "external"
-      service_name: "nfs-conteirner"
+      host_type: "$VM_ROLE"
+      environment: "$ENVIRONMENT"
+      cluster: "$CLUSTER_NAME"
+      service_name: "$VM_HOSTNAME"
     fields_under_root: true
     processors:
       - add_tags:
@@ -179,10 +202,10 @@ filebeat.inputs:
       index_name: "nfs-security-logs"
       source_type: "auth_log"
       log_type: "security"
-      host_type: "nfs_server"
-      environment: "production"
-      cluster: "external"
-      service_name: "nfs-conteirner"
+      host_type: "$VM_ROLE"
+      environment: "$ENVIRONMENT"
+      cluster: "$CLUSTER_NAME"
+      service_name: "$VM_HOSTNAME"
     fields_under_root: true
     processors:
       - add_tags:
@@ -204,14 +227,14 @@ filebeat.inputs:
     paths:
       - /var/log/nfs*
       - /var/log/rpc*
-    ignore_older: 48h
+    ignore_older: $IGNORE_OLDER_HOURS
     fields:
       index_name: "nfs-service-logs"
       source_type: "nfs_log"
       log_type: "service"
-      host_type: "nfs_server"
-      environment: "production"
-      cluster: "external"
+      host_type: "$VM_ROLE"
+      environment: "$ENVIRONMENT"
+      cluster: "$CLUSTER_NAME"
       service_name: "nfs-server"
     fields_under_root: true
     processors:
@@ -227,14 +250,14 @@ filebeat.inputs:
     json.keys_under_root: true
     json.add_error_key: true
     json.message_key: log
-    ignore_older: 24h
+    ignore_older: $DOCKER_IGNORE_OLDER_HOURS
     fields:
       index_name: "nfs-docker-logs"
       source_type: "docker"
       log_type: "container"
-      host_type: "nfs_server"
-      environment: "production"
-      cluster: "external"
+      host_type: "$VM_ROLE"
+      environment: "$ENVIRONMENT"
+      cluster: "$CLUSTER_NAME"
     fields_under_root: true
     processors:
       - add_docker_metadata:
@@ -255,14 +278,14 @@ filebeat.inputs:
       - /var/log/containerd/*.log
     symlinks: true
     exclude_files: ['\.gz$']
-    ignore_older: 24h
+    ignore_older: $DOCKER_IGNORE_OLDER_HOURS
     fields:
       index_name: "nfs-containerd-logs"
       source_type: "containerd"
       log_type: "container"
-      host_type: "nfs_server"
-      environment: "production"
-      cluster: "external"
+      host_type: "$VM_ROLE"
+      environment: "$ENVIRONMENT"
+      cluster: "$CLUSTER_NAME"
     fields_under_root: true
     processors:
       - add_tags:
@@ -275,14 +298,14 @@ filebeat.inputs:
       - /var/log/apache2/*.log
       - /var/log/nginx/*.log
     exclude_files: ['\.gz$']
-    ignore_older: 24h
+    ignore_older: $DOCKER_IGNORE_OLDER_HOURS
     fields:
       index_name: "nfs-webserver-logs"
       source_type: "webserver"
       log_type: "access"
-      host_type: "nfs_server"
-      environment: "production"
-      cluster: "external"
+      host_type: "$VM_ROLE"
+      environment: "$ENVIRONMENT"
+      cluster: "$CLUSTER_NAME"
     fields_under_root: true
     processors:
       - add_tags:
@@ -300,9 +323,9 @@ filebeat.inputs:
       index_name: "nfs-config-logs"
       source_type: "config_file"
       log_type: "configuration"
-      host_type: "nfs_server"
-      environment: "production"
-      cluster: "external"
+      host_type: "$VM_ROLE"
+      environment: "$ENVIRONMENT"
+      cluster: "$CLUSTER_NAME"
       config_monitoring: true
     fields_under_root: true
     close_inactive: 5m
@@ -313,7 +336,7 @@ filebeat.inputs:
 
 # ============================== Módulos desabilitados ===============================
 filebeat.config.modules:
-  path: ${path.config}/modules.d/*.yml
+  path: \${path.config}/modules.d/*.yml
   reload.enabled: false
 
 # ============================== Processadores Globais ===============================
@@ -323,12 +346,12 @@ processors:
   - add_fields:
       target: ''
       fields:
-        vm_hostname: "nfs-conteirner"
-        vm_ip: "10.130.0.253"
-        vm_os: "Debian GNU/Linux"
-        vm_kernel: "5.10.0-9-amd64"
-        vm_role: "nfs_server"
-        datacenter: "observabilidade"
+        vm_hostname: "$VM_HOSTNAME"
+        vm_ip: "$VM_IP"
+        vm_os: "$VM_OS"
+        vm_kernel: "$VM_KERNEL"
+        vm_role: "$VM_ROLE"
+        datacenter: "$DATACENTER"
         deployment_type: "external_vm"
         monitoring_source: "filebeat"
 
@@ -339,13 +362,13 @@ processors:
 
 # ============================== Output -> Logstash ===============================
 output.logstash:
-  hosts: ["10.130.1.115:5044"]  # Logstash no cluster K8S C2
+  hosts: ["$LOGSTASH_HOST:$LOGSTASH_PORT"]  # Logstash no cluster K8S
   loadbalance: true
-  bulk_max_size: 2048
-  worker: 2
-  compression_level: 3
-  ttl: 30s
-  timeout: 30s
+  bulk_max_size: $BULK_MAX_SIZE
+  worker: $WORKER_COUNT
+  compression_level: $COMPRESSION_LEVEL
+  ttl: $CONNECTION_TIMEOUT
+  timeout: $CONNECTION_TIMEOUT
 
 # ============================== Logging do Filebeat ===============================
 logging.level: info
@@ -353,33 +376,33 @@ logging.to_files: true
 logging.files:
   path: /var/log/filebeat
   name: filebeat
-  keepfiles: 7
+  keepfiles: $LOG_RETENTION_DAYS
   permissions: 0644
-  rotateeverybytes: 10485760  # 10MB
+  rotateeverybytes: $((LOG_MAX_SIZE_MB * 1024 * 1024))  # ${LOG_MAX_SIZE_MB}MB
 
 # ============================== Monitoramento ===============================
-monitoring.enabled: false
-# monitoring.elasticsearch:
-#   hosts: ["10.130.1.114:9200"]  # Elasticsearch no cluster K8S C2
+## habilitar para true com Elasticsearch
+monitoring.enabled: true
+## descomentar usando Elasticsearch
+monitoring.elasticsearch:
+  hosts: ["$ELASTICSEARCH_HOST:$ELASTICSEARCH_PORT"]  # Elasticsearch no cluster K8S
 
-# opcional: métricas via HTTP (para Prometheus/Metricbeat módulo "beat")
-http.enabled: true
-http.host: 0.0.0.0
+## opcional: métricas via HTTP (para Prometheus/Metricbeat módulo "beat")
+## descomentar usando Opensearch
+#http.enabled: true
+#http.host: $FILEBEAT_HTTP_HOST
+#http.port: $FILEBEAT_HTTP_PORT
 
 # ============================== Performance ===============================
 queue.mem:
-  events: 4096
-  flush.min_events: 512
-  flush.timeout: 5s
+  events: $QUEUE_EVENTS
+  flush.min_events: $QUEUE_FLUSH_MIN
+  flush.timeout: $QUEUE_FLUSH_TIMEOUT
 
 # ============================== Configurações de Segurança ===============================
 ssl.verification_mode: none  # Para ambiente interno
 ssl.supported_protocols: ["TLSv1.2", "TLSv1.3"]
 EOF
-
-# Substituir variáveis na configuração
-sed -i "s/\$DOCKER_EXISTS/$DOCKER_EXISTS/g" /etc/filebeat/filebeat.yml
-sed -i "s/\$CONTAINERD_EXISTS/$CONTAINERD_EXISTS/g" /etc/filebeat/filebeat.yml
 
 # Verificar sintaxe da configuração
 echo "Verificando configuração do Filebeat..."
@@ -447,7 +470,14 @@ echo "Configurando monitoramento automático..."
 
 echo
 echo "=== INSTALAÇÃO CONCLUÍDA ==="
-echo "Filebeat 7.10.2 instalado e configurado!"
+echo "Filebeat $FILEBEAT_VERSION instalado e configurado!"
+echo
+echo "Parâmetros utilizados:"
+echo "  - VM: $VM_HOSTNAME ($VM_IP)"
+echo "  - Logstash: $LOGSTASH_HOST:$LOGSTASH_PORT"
+echo "  - Elasticsearch: $ELASTICSEARCH_HOST:$ELASTICSEARCH_PORT"
+echo "  - Ambiente: $ENVIRONMENT"
+echo "  - Datacenter: $DATACENTER"
 echo
 echo "Comandos úteis:"
 echo "  - Status: systemctl status filebeat"
@@ -458,8 +488,7 @@ echo
 echo "Configurações:"
 echo "  - Config: /etc/filebeat/filebeat.yml"
 echo "  - Logs: /var/log/filebeat/"
-echo "  - Logstash: 10.130.1.115:5044"
-echo "  - Elasticsearch: 10.130.1.114:9200"
+echo "  - Métricas HTTP: http://$VM_IP:$FILEBEAT_HTTP_PORT"
 echo
 echo "Os logs da VM serão enviados para os seguintes índices:"
 echo "  - nfs-system-logs-YYYY.MM.DD"
