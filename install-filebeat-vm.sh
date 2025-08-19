@@ -10,7 +10,7 @@
 # chmod +x install-filebeat-vm.sh
 # ./install-filebeat-vm.sh
 #
-# Data: 2023-10-20
+# Data: 17-08-2025
 # Versão: 1.1
 
 # ============================== PARÂMETROS DE CONFIGURAÇÃO ===============================
