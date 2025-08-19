@@ -10,7 +10,6 @@
 # chmod +x install-filebeat-vm.sh
 # ./install-filebeat-vm.sh
 #
-# Autor: Erivando Sena<erivandosena@gmail.com>
 # Data: 2023-10-20
 # Versão: 1.1
 
