@@ -1,17 +1,18 @@
 #!/bin/bash
 #
 # Script de instalação do Filebeat 7.10.2 OSS em VM
-# Compatível com: Ubuntu/Debian 5.10.0-9-amd64
+# Compatível com: Ubuntu/Debian 5.x-amd64
 # Destino: Stack ELK no cluster K8S
+# Autor: Erivando Sena<erivandosena@gmail.com>
+# Data: 2023-10-20
+# Versão: 1.1
 #
 # Como usar:
 # cd /root
 # wget -O install-filebeat-vm.sh [URL_DO_SCRIPT]
 # chmod +x install-filebeat-vm.sh
 # ./install-filebeat-vm.sh
-#
-# Data: 17-08-2025
-# Versão: 1.1
+# export INDEX_PREFIX=vm-teste
 
 # ============================== PARÂMETROS DE CONFIGURAÇÃO ===============================
 # Ajustar parâmetros abaixo conforme ambiente
@@ -23,11 +24,11 @@ ELASTICSEARCH_HOST="10.130.1.114"
 ELASTICSEARCH_PORT="9200"
 
 # VM monitorada
-VM_HOSTNAME="nfs-conteirner"
-VM_IP="10.130.0.253"
-VM_OS="Debian GNU/Linux"
-VM_KERNEL="5.10.0-9-amd64"
-VM_ROLE="nfs_server"
+VM_HOSTNAME="vmteste"
+VM_IP="10.130.1.12"
+VM_OS="Ubuntu GNU/Linux"
+VM_KERNEL="5.x-generic"
+VM_ROLE="vm_server"
 
 # Ambiente e Datacenter
 ENVIRONMENT="production"
@@ -53,6 +54,9 @@ LOG_RETENTION_DAYS="7"
 LOG_MAX_SIZE_MB="10"
 IGNORE_OLDER_HOURS="48h"
 DOCKER_IGNORE_OLDER_HOURS="24h"
+
+# Prefixo parametrizável para nomes de índices (ex.: nfs, k8s)
+INDEX_PREFIX="${INDEX_PREFIX:-vm}"
 
 # ============================== INÍCIO DO SCRIPT ===============================
 
@@ -129,13 +133,39 @@ mkdir -p /var/log/filebeat
 chown root:root /var/log/filebeat
 chmod 755 /var/log/filebeat
 
-# Dar permissão de leitura para todos nos logs essenciais
-chmod 644 /var/log/syslog
-chmod 644 /var/log/auth.log
-chmod 644 /var/log/daemon.log
+# Dar acesso seguro em nível de pasta aos logs para o Filebeat (com herança)
+echo "Ajustando acesso do Filebeat aos logs (modo seguro, pasta e herança)..."
 
-# Verificar se mudou
-ls -la /var/log/{syslog,auth.log,daemon.log}
+# Garantir pacote de ACL disponível
+if ! command -v setfacl >/dev/null 2>&1; then
+  apt-get update -q
+  apt-get install -y acl
+fi
+
+# Adicionar o usuário filebeat ao grupo 'adm' (leitura típica de /var/log)
+if id -u filebeat >/dev/null 2>&1; then
+  usermod -aG adm filebeat || true
+else
+  echo "Aviso: usuário 'filebeat' não encontrado ainda; seguirá quando o serviço for criado."
+fi
+
+# Aplicar ACLs em /var/log para leitura/execução pelo usuário filebeat (se existir)
+if id -u filebeat >/dev/null 2>&1; then
+  # Permite o filebeat listar pastas e ler arquivos existentes
+  setfacl -R -m u:filebeat:rx /var/log
+  # Default ACL: novos arquivos/pastas herdam leitura/execução para filebeat
+  setfacl -R -d -m u:filebeat:rx /var/log
+
+  # Dar leitura explícita nos arquivos de log mais comuns (se existirem)
+  for f in /var/log/syslog /var/log/auth.log /var/log/kern.log /var/log/daemon.log; do
+    [[ -e "$f" ]] && setfacl -m u:filebeat:r "$f"
+  done
+else
+  echo "Aviso: 'filebeat' ainda não existe; ACL herdada em /var/log já configurada. Assim que o usuário for criado, herda acesso."
+fi
+
+# (Opcional) Garantir leitura de grupo para *.log existentes sem alterar todo o /var/log
+find /var/log -type f -name "*.log" -exec chmod g+r {} \; 2>/dev/null || true
 
 # Verificar se Docker existe
 DOCKER_EXISTS=false
@@ -181,7 +211,7 @@ filebeat.inputs:
       - /var/log/apt/history.log
     ignore_older: $IGNORE_OLDER_HOURS
     fields:
-      index_name: "nfs-system-logs"
+      index_name: "$INDEX_PREFIX-system-logs"
       source_type: "system_log"
       host_type: "$VM_ROLE"
       environment: "$ENVIRONMENT"
@@ -190,7 +220,7 @@ filebeat.inputs:
     fields_under_root: true
     processors:
       - add_tags:
-          tags: ["system", "debian", "nfs-server"]
+          tags: ["system", "debian", "${VM_ROLE}"]
 
   # --- Logs de autenticação SSH ---
   - type: log
@@ -198,7 +228,7 @@ filebeat.inputs:
     paths:
       - /var/log/auth.log
     fields:
-      index_name: "nfs-security-logs"
+      index_name: "$INDEX_PREFIX-security-logs"
       source_type: "auth_log"
       log_type: "security"
       host_type: "$VM_ROLE"
@@ -228,13 +258,13 @@ filebeat.inputs:
       - /var/log/rpc*
     ignore_older: $IGNORE_OLDER_HOURS
     fields:
-      index_name: "nfs-service-logs"
+      index_name: "$INDEX_PREFIX-service-logs"
       source_type: "nfs_log"
       log_type: "service"
       host_type: "$VM_ROLE"
       environment: "$ENVIRONMENT"
       cluster: "$CLUSTER_NAME"
-      service_name: "nfs-server"
+      service_name: "${VM_ROLE}"
     fields_under_root: true
     processors:
       - add_tags:
@@ -251,7 +281,7 @@ filebeat.inputs:
     json.message_key: log
     ignore_older: $DOCKER_IGNORE_OLDER_HOURS
     fields:
-      index_name: "nfs-docker-logs"
+      index_name: "$INDEX_PREFIX-docker-logs"
       source_type: "docker"
       log_type: "container"
       host_type: "$VM_ROLE"
@@ -279,7 +309,7 @@ filebeat.inputs:
     exclude_files: ['\.gz$']
     ignore_older: $DOCKER_IGNORE_OLDER_HOURS
     fields:
-      index_name: "nfs-containerd-logs"
+      index_name: "$INDEX_PREFIX-containerd-logs"
       source_type: "containerd"
       log_type: "container"
       host_type: "$VM_ROLE"
@@ -299,7 +329,7 @@ filebeat.inputs:
     exclude_files: ['\.gz$']
     ignore_older: $DOCKER_IGNORE_OLDER_HOURS
     fields:
-      index_name: "nfs-webserver-logs"
+      index_name: "$INDEX_PREFIX-webserver-logs"
       source_type: "webserver"
       log_type: "access"
       host_type: "$VM_ROLE"
@@ -319,7 +349,7 @@ filebeat.inputs:
       - /etc/hosts
       - /etc/resolv.conf
     fields:
-      index_name: "nfs-config-logs"
+      index_name: "$INDEX_PREFIX-config-logs"
       source_type: "config_file"
       log_type: "configuration"
       host_type: "$VM_ROLE"
@@ -490,11 +520,11 @@ echo "  - Logs: /var/log/filebeat/"
 echo "  - Métricas HTTP: http://$VM_IP:$FILEBEAT_HTTP_PORT"
 echo
 echo "Os logs da VM serão enviados para os seguintes índices:"
-echo "  - nfs-system-logs-YYYY.MM.DD"
-echo "  - nfs-security-logs-YYYY.MM.DD"
-echo "  - nfs-service-logs-YYYY.MM.DD"
-echo "  - nfs-docker-logs-YYYY.MM.DD (se Docker estiver presente)"
-echo "  - nfs-containerd-logs-YYYY.MM.DD (se containerd estiver presente)"
-echo "  - nfs-webserver-logs-YYYY.MM.DD (se Apache/Nginx estiver presente)"
-echo "  - nfs-config-logs-YYYY.MM.DD (monitoramento de arquivos de configuração)"
+echo "  - ${INDEX_PREFIX}-system-logs-YYYY.MM.DD"
+echo "  - ${INDEX_PREFIX}-security-logs-YYYY.MM.DD"
+echo "  - ${INDEX_PREFIX}-service-logs-YYYY.MM.DD"
+echo "  - ${INDEX_PREFIX}-docker-logs-YYYY.MM.DD (se Docker estiver presente)"
+echo "  - ${INDEX_PREFIX}-containerd-logs-YYYY.MM.DD (se containerd estiver presente)"
+echo "  - ${INDEX_PREFIX}-webserver-logs-YYYY.MM.DD (se Apache/Nginx estiver presente)"
+echo "  - ${INDEX_PREFIX}-config-logs-YYYY.MM.DD (monitoramento de arquivos de configuração)"
 echo "Fim"
