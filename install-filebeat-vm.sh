@@ -20,11 +20,11 @@
 # VM monitorada
 VM_HOSTNAME="vmteste"
 VM_IP="10.130.1.12"
+VM_ROLE="vm_server"
+# Prefixo parametrizável (ex.: nfs, haproxy, etc)
+INDEX_PREFIX="${INDEX_PREFIX:-vm}"
 VM_OS="Ubuntu GNU/Linux"
 VM_KERNEL="5.x-generic"
-VM_ROLE="vm_server"
-# Prefixo parametrizável (ex.: nfs, k8s)
-INDEX_PREFIX="${INDEX_PREFIX:-vm}"
 
 # Cluster K8S - ELK Stack
 LOGSTASH_HOST="10.130.1.115"
