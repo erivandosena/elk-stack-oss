@@ -17,18 +17,20 @@
 # ============================== PARÂMETROS DE CONFIGURAÇÃO ===============================
 # Ajustar parâmetros abaixo conforme ambiente
 
-# Cluster K8S - ELK Stack
-LOGSTASH_HOST="10.130.1.115"
-LOGSTASH_PORT="5044"
-ELASTICSEARCH_HOST="10.130.1.114"
-ELASTICSEARCH_PORT="9200"
-
 # VM monitorada
 VM_HOSTNAME="vmteste"
 VM_IP="10.130.1.12"
 VM_OS="Ubuntu GNU/Linux"
 VM_KERNEL="5.x-generic"
 VM_ROLE="vm_server"
+# Prefixo parametrizável (ex.: nfs, k8s)
+INDEX_PREFIX="${INDEX_PREFIX:-vm}"
+
+# Cluster K8S - ELK Stack
+LOGSTASH_HOST="10.130.1.115"
+LOGSTASH_PORT="5044"
+ELASTICSEARCH_HOST="10.130.1.114"
+ELASTICSEARCH_PORT="9200"
 
 # Ambiente e Datacenter
 ENVIRONMENT="production"
@@ -54,9 +56,6 @@ LOG_RETENTION_DAYS="7"
 LOG_MAX_SIZE_MB="10"
 IGNORE_OLDER_HOURS="48h"
 DOCKER_IGNORE_OLDER_HOURS="24h"
-
-# Prefixo parametrizável para nomes de índices (ex.: nfs, k8s)
-INDEX_PREFIX="${INDEX_PREFIX:-vm}"
 
 # ============================== INÍCIO DO SCRIPT ===============================
 
