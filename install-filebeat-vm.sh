@@ -1,11 +1,10 @@
 #!/bin/bash
 #
-# Script de instalação do Filebeat 7.10.2 OSS em VM
-# Compatível com: Ubuntu/Debian 5.x-amd64
+# Script de instalação Filebeat 7.10.2 versão OSS
+# Compatível com: Ubuntu/Debian amd64
 # Destino: Stack ELK no cluster K8S
-# Autor: Erivando Sena<erivandosena@gmail.com>
-# Data: 2023-10-20
-# Versão: 1.1
+# Data: 20-08-2025
+# Versão: 1.0
 #
 # Como usar:
 # cd /root
@@ -15,13 +14,12 @@
 # export INDEX_PREFIX=vm-teste
 
 # ============================== PARÂMETROS DE CONFIGURAÇÃO ===============================
-# Ajustar parâmetros abaixo conforme ambiente
+# Ajustar parâmetros (VM monitorada) conforme ambiente se preferir
 
 # VM monitorada
-VM_HOSTNAME="vmteste"
-VM_IP="10.130.1.12"
-VM_ROLE="vm_server"
-# Prefixo parametrizável (ex.: nfs, haproxy, etc)
+VM_HOSTNAME="$(hostname -s)"
+VM_IP="$(hostname -I | awk '{print $1}')"
+VM_ROLE="vm_${VM_HOSTNAME%%[0-9]*}"
 INDEX_PREFIX="${INDEX_PREFIX:-vm}"
 VM_OS="Ubuntu GNU/Linux"
 VM_KERNEL="5.x-generic"
@@ -148,7 +146,7 @@ else
   echo "Aviso: usuário 'filebeat' não encontrado ainda; seguirá quando o serviço for criado."
 fi
 
-# Aplicar ACLs em /var/log para leitura/execução pelo usuário filebeat (se existir)
+# Aplicar ACLs em /var/log para leitura/execução pelo usuário filebeat
 if id -u filebeat >/dev/null 2>&1; then
   # Permite o filebeat listar pastas e ler arquivos existentes
   setfacl -R -m u:filebeat:rx /var/log
@@ -269,7 +267,7 @@ filebeat.inputs:
       - add_tags:
           tags: ["nfs", "storage", "service"]
 
-  # --- Logs de containers Docker (se existir) ---
+  # --- Logs de containers Docker ---
   - type: log
     enabled: $DOCKER_EXISTS
     paths:
@@ -298,7 +296,7 @@ filebeat.inputs:
           when:
             has_fields: ["message"]
 
-  # --- Logs do containerd (se existir) ---
+  # --- Logs do containerd ---
   - type: log
     enabled: $CONTAINERD_EXISTS
     paths:
@@ -409,18 +407,18 @@ logging.files:
   rotateeverybytes: $((LOG_MAX_SIZE_MB * 1024 * 1024))  # ${LOG_MAX_SIZE_MB}MB
 
 # ============================== Monitoramento ===============================
-## habilitar para true com Elasticsearch
+## === Quando usar Elasticsearch (X-Pack Monitoring) ===
+## Habilite estas linhas se sua stack for Elasticsearch:
 monitoring.enabled: true
-## descomentar usando Elasticsearch
 monitoring.elasticsearch:
-  hosts: ["$ELASTICSEARCH_HOST:$ELASTICSEARCH_PORT"]  # Elasticsearch no cluster K8S
+ hosts: ["${ELASTICSEARCH_HOST}:${ELASTICSEARCH_PORT}"]  # Elasticsearch no K8S
 
-## opcional: métricas via HTTP (para Prometheus/Metricbeat módulo "beat")
-## descomentar usando Opensearch
-#http.enabled: true
-#http.host: $FILEBEAT_HTTP_HOST
-#http.port: $FILEBEAT_HTTP_PORT
-
+## === Quando usar com OpenSearch (ou ambiente sem X-Pack) ===
+## Habilite estas linhas se sua stack for OpenSearch:
+http:
+  enabled: true
+  host: "${FILEBEAT_HTTP_HOST}"      # 0.0.0.0 no script
+  port: ${FILEBEAT_HTTP_PORT}        # 5066 no script
 # ============================== Performance ===============================
 queue.mem:
   events: $QUEUE_EVENTS
@@ -452,10 +450,10 @@ else
 fi
 
 # Habilitar e iniciar serviço
-echo "Habilitando e iniciando serviço Filebeat..."
+echo "Habilitando e REINICIANDO serviço Filebeat..."
 systemctl daemon-reload
 systemctl enable filebeat
-systemctl start filebeat
+systemctl restart filebeat
 
 # Verificar status
 sleep 3
@@ -466,9 +464,16 @@ else
     echo "Erro ao iniciar Filebeat"
     echo "=== Logs de erro ==="
     journalctl -u filebeat --no-pager --lines=10
-    echo "=== Status detalhado ==="
-    systemctl status filebeat --no-pager --lines=10
     exit 1
+fi
+
+# Verificar endpoint HTTP (quando habilitado)
+if grep -qE '^\s*http:\s*$' /etc/filebeat/filebeat.yml; then
+  if ss -lntp | grep -q ":${FILEBEAT_HTTP_PORT}"; then
+    echo "✓ Endpoint HTTP disponível em http://${VM_IP}:${FILEBEAT_HTTP_PORT}/"
+  else
+    echo "✗ Endpoint HTTP não respondeu na porta ${FILEBEAT_HTTP_PORT}"
+  fi
 fi
 
 echo
@@ -526,4 +531,3 @@ echo "  - ${INDEX_PREFIX}-docker-logs-YYYY.MM.DD (se Docker estiver presente)"
 echo "  - ${INDEX_PREFIX}-containerd-logs-YYYY.MM.DD (se containerd estiver presente)"
 echo "  - ${INDEX_PREFIX}-webserver-logs-YYYY.MM.DD (se Apache/Nginx estiver presente)"
 echo "  - ${INDEX_PREFIX}-config-logs-YYYY.MM.DD (monitoramento de arquivos de configuração)"
-echo "Fim"
