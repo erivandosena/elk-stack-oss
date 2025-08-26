@@ -3,7 +3,6 @@
 # Script de instalação Filebeat 7.10.2 versão OSS
 # Compatível com: Ubuntu/Debian amd64
 # Destino: Stack ELK no cluster K8S
-# <erivandosena@gmail.com>
 # Data: 20-08-2025
 # Versão: 1.0
 #
@@ -113,6 +112,7 @@ apt-get update -q
 
 # Instalar Filebeat 7.10.2
 apt-get install -y filebeat=$FILEBEAT_VERSION
+sudo apt-mark hold filebeat
 
 # Atualizar cache do apt
 apt-get update -q
@@ -420,6 +420,7 @@ http:
   enabled: true
   host: "${FILEBEAT_HTTP_HOST}"      # 0.0.0.0 no script
   port: ${FILEBEAT_HTTP_PORT}        # 5066 no script
+
 # ============================== Performance ===============================
 queue.mem:
   events: $QUEUE_EVENTS
