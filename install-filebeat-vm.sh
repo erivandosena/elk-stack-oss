@@ -4,7 +4,7 @@
 # Compatível com: Ubuntu/Debian amd64
 # Destino: Stack ELK no cluster K8S
 # Data: 20-08-2025
-# Versão: 1.0
+# Versão: 1.1
 #
 # Como usar:
 # cd /root
@@ -131,6 +131,12 @@ mkdir -p /var/log/filebeat
 chown root:root /var/log/filebeat
 chmod 755 /var/log/filebeat
 
+# Criar usuário filebeat se não existir (correção aplicada)
+if ! id -u filebeat >/dev/null 2>&1; then
+    echo "Criando usuário filebeat..."
+    useradd --system --home /usr/share/filebeat --shell /bin/false filebeat
+fi
+
 # Dar acesso seguro em nível de pasta aos logs para o Filebeat (com herança)
 echo "Ajustando acesso do Filebeat aos logs (modo seguro, pasta e herança)..."
 
@@ -143,16 +149,29 @@ fi
 # Adicionar o usuário filebeat ao grupo 'adm' (leitura típica de /var/log)
 if id -u filebeat >/dev/null 2>&1; then
   usermod -aG adm filebeat || true
+
+  # Adicionar filebeat ao grupo docker (correção aplicada)
+  if getent group docker >/dev/null 2>&1; then
+    echo "Adicionando filebeat ao grupo docker..."
+    usermod -aG docker filebeat
+  fi
 else
   echo "Aviso: usuário 'filebeat' não encontrado ainda; seguirá quando o serviço for criado."
 fi
 
-# Aplicar ACLs em /var/log para leitura/execução pelo usuário filebeat
+# Aplicar ACLs em /var/log para leitura/execução pelo usuário filebeat (correção aplicada)
 if id -u filebeat >/dev/null 2>&1; then
   # Permite o filebeat listar pastas e ler arquivos existentes
   setfacl -R -m u:filebeat:rx /var/log
   # Default ACL: novos arquivos/pastas herdam leitura/execução para filebeat
   setfacl -R -d -m u:filebeat:rx /var/log
+
+  # Aplicar ACL nos logs do Docker (correção aplicada)
+  if [ -d "/var/lib/docker/containers" ]; then
+    echo "Aplicando ACL nos logs do Docker..."
+    setfacl -R -m u:filebeat:rx /var/lib/docker/containers/
+    setfacl -R -d -m u:filebeat:rx /var/lib/docker/containers/
+  fi
 
   # Dar leitura explícita nos arquivos de log mais comuns (se existirem)
   for f in /var/log/syslog /var/log/auth.log /var/log/kern.log /var/log/daemon.log; do
