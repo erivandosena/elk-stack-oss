@@ -3,6 +3,7 @@
 # Script de instalação Filebeat 7.10.2 versão OSS
 # Compatível com: Ubuntu/Debian amd64
 # Destino: Stack ELK no cluster K8S
+# <erivandosena@gmail.com>
 # Data: 20-08-2025
 # Versão: 1.0
 #
@@ -521,7 +522,7 @@ echo
 echo "Configurações:"
 echo "  - Config: /etc/filebeat/filebeat.yml"
 echo "  - Logs: /var/log/filebeat/"
-echo "  - Métricas HTTP: http://$VM_IP:$FILEBEAT_HTTP_PORT"
+echo "  - Métricas HTTP: http://$VM_IP:$FILEBEAT_HTTP_PORT/stats"
 echo
 echo "Os logs da VM serão enviados para os seguintes índices:"
 echo "  - ${INDEX_PREFIX}-system-logs-YYYY.MM.DD"
