@@ -4,7 +4,7 @@
 # Compatível com: Ubuntu/Debian amd64
 # Destino: Stack ELK no cluster K8S
 # Data: 20-08-2025
-# Versão: 1.2
+# Versão: 1.4
 #
 # Como usar:
 # cd /root
@@ -234,7 +234,7 @@ filebeat.inputs:
   - type: log
     enabled: true
     paths:
-$EXISTING_LOGS
+$SYSTEM_LOG_PATHS
     ignore_older: $IGNORE_OLDER_HOURS
     fields:
       index_name: "$INDEX_PREFIX-system-logs"
