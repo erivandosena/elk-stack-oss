@@ -9,20 +9,19 @@
 # ✓ Debian: 10 (Buster), 11 (Bullseye), 12 (Bookworm)
 #
 # Destino: Stack ELK no cluster K8S
-# Data: 26-08-2025
+# Data: 30-08-2025
 # Versão: 2.0
 #
 # Uso:
 #   cd /root
-#   wget -O install-filebeat-vm.sh [URL_DO_SCRIPT]
-#   chmod +x install-filebeat-vm.sh
-#   ./install-filebeat-vm.sh
+#   wget -O install-filebeat.sh [URL_DO_SCRIPT]
+#   bash install-filebeat.sh
 #   # opcional:
-#   # INDEX_PREFIX=vm-teste ENABLE_XPACK_MONITORING=true ./install-filebeat-vm.sh
-
+#   export INDEX_PREFIX=vm
 # ============================== PARÂMETROS ===============================
 set -e
 
+# VM monitorada
 # VM monitorada
 VM_HOSTNAME="$(hostname -s)"
 VM_IP="$(hostname -I | awk '{print $1}')"
@@ -143,7 +142,17 @@ if [[ -f /var/lib/apt/periodic/update-success-stamp ]]; then
     echo "Sistema atualizado recentemente, pulando apt update"
   fi
 fi
-[[ "$UPDATE_NEEDED" == "true" ]] && apt-get update -q
+apt_update_main_or_warn() {
+  if [[ "$UPDATE_NEEDED" != "true" ]]; then return 0; fi
+  echo "Atualizando índices APT (main only)..."
+  if ! apt-get update -q \
+       -o Dir::Etc::sourcelist=/etc/apt/sources.list \
+       -o Dir::Etc::sourceparts=/dev/null \
+       -o APT::Get::List-Cleanup=0; then
+    echo "Aviso: 'apt-get update' (main) falhou; prosseguindo com índices existentes."
+  fi
+}
+apt_update_main_or_warn
 
 echo "Verificando dependências..."
 MISSING_PACKAGES=()
@@ -179,6 +188,9 @@ else
   echo "Todas as dependências já estão instaladas"
 fi
 
+apt-get install -y iproute2 || true     # fornece 'ss'
+command -v netstat >/dev/null || apt-get install -y net-tools || true  # fornece 'netstat'
+
 # ============================== REPO ELASTIC 7.x ===============================
 REPO_CONFIGURED=false
 if [[ -f /usr/share/keyrings/elastic-keyring.gpg ]] && [[ -f /etc/apt/sources.list.d/elastic-7.x.list ]]; then
@@ -196,7 +208,10 @@ if [[ "$REPO_CONFIGURED" == "false" ]]; then
   fi
   [[ -f /usr/share/keyrings/elastic-keyring.gpg ]] || { echo "Erro: GPG do Elastic não importada"; exit 1; }
   echo "deb [signed-by=/usr/share/keyrings/elastic-keyring.gpg] https://artifacts.elastic.co/packages/7.x/apt stable main" > /etc/apt/sources.list.d/elastic-7.x.list
-  apt-get update -q
+  apt-get update -q \
+    -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/elastic-7.x.list \
+    -o Dir::Etc::sourceparts=/dev/null \
+    -o APT::Get::List-Cleanup=0
   echo "Repositório Elastic 7.x configurado"
 fi
 
@@ -293,7 +308,10 @@ fi
 
 if [[ "$CONFIG_NEEDS_UPDATE" == "true" ]]; then
   echo "Aplicando configuração do Filebeat..."
-  [[ -f /etc/filebeat/filebeat.yml ]] && cp /etc/filebeat/filebeat.yml /etc/filebeat/filebeat.yml.backup.$(date +%Y%m%d_%H%M%S)
+  if [[ -f /etc/filebeat/filebeat.yml ]]; then
+    cp -a /etc/filebeat/filebeat.yml /etc/filebeat/filebeat.yml.bak.$(date +%F_%H%M%S)
+    rm -f /etc/filebeat/filebeat.yml
+  fi
 
   cat > /etc/filebeat/filebeat.yml << EOF
 ################### Filebeat Configuration for VM #####################
@@ -492,13 +510,17 @@ processors:
 output.logstash:
   hosts: ["$LOGSTASH_HOST:$LOGSTASH_PORT"]
   loadbalance: true
+  # bulk_max_size: $BULK_MAX_SIZE
+  # worker: $WORKER_COUNT
+  # compression_level: $COMPRESSION_LEVEL
+  # timeout: $CONNECTION_TIMEOUT
+  # ssl:
+  #   verification_mode: false
+  #   supported_protocols: ["TLSv1.2", "TLSv1.3"]
   bulk_max_size: $BULK_MAX_SIZE
   worker: $WORKER_COUNT
   compression_level: $COMPRESSION_LEVEL
   timeout: $CONNECTION_TIMEOUT
-  ssl:
-    verification_mode: none
-    supported_protocols: ["TLSv1.2", "TLSv1.3"]
 
 # ============================== Logging do Filebeat ===============================
 logging.level: info
@@ -547,6 +569,8 @@ fi
 SERVICE_NEEDS_RESTART=false
 systemctl is-enabled --quiet filebeat 2>/dev/null || { systemctl daemon-reload; systemctl enable filebeat; SERVICE_NEEDS_RESTART=true; }
 [[ "$CONFIG_NEEDS_UPDATE" == "true" || "$FILEBEAT_SERVICE_OK" == "false" ]] && SERVICE_NEEDS_RESTART=true
+# systemctl daemon-reload
+# systemctl enable --now filebeat 2>/dev/null || true
 
 if [[ "$SERVICE_NEEDS_RESTART" == "true" ]]; then
   echo "Reiniciando serviço Filebeat..."
@@ -564,7 +588,13 @@ if [[ "$SERVICE_NEEDS_RESTART" == "true" ]]; then
     echo "Tentativa $i: Aguardando inicialização..."
   done
 else
-  echo "Serviço já está rodando corretamente"
+  # Verificar status
+  sleep 4
+  if systemctl is-active --quiet filebeat; then
+    echo "✓ Filebeat iniciado"
+    systemctl status filebeat --no-pager --lines=5
+    echo "Serviço já está rodando corretamente"
+  fi
 fi
 
 # ============================== MONITOR SCRIPT / CRON ===============================
@@ -589,9 +619,11 @@ EOF
   echo "Script de monitoramento criado"
 fi
 
-if ! crontab -l 2>/dev/null | grep -q "check-filebeat.sh"; then
-  echo "Configurando monitoramento automático..."
-  (crontab -l 2>/dev/null; echo "*/5 * * * * /usr/local/bin/check-filebeat.sh >/dev/null 2>&1") | crontab -
+if ! crontab -l 2>/dev/null | grep -q "/usr/local/bin/check-filebeat.sh"; then
+  echo "Configurando monitoramento automático. [AGUARDE...]"
+  ( crontab -l 2>/dev/null || true; \
+    echo "*/5 * * * * /usr/local/bin/check-filebeat.sh >/dev/null 2>&1" \
+  ) | crontab - || echo "Aviso: falha ao aplicar crontab (prosseguindo)"
   echo "Crontab configurado"
 fi
 
@@ -643,7 +675,7 @@ echo "  - Monitor: /usr/local/bin/check-filebeat.sh"
 echo "  - Métricas: http://$VM_IP:$FILEBEAT_HTTP_PORT/stats"
 echo
 case $FINAL_STATUS in
-  SUCCESS) echo "✓ Pronto. Pode reexecutar o script quantas vezes precisar (idempotente).";;
-  WARNING) echo "⚠ Concluído com avisos — verifique: journalctl -u filebeat -f";;
+  SUCCESS) echo "✓ Pronto. Script idempotente executado (IBS).";;
+  WARNING) echo "[!] Concluído com avisos — verifique: journalctl -u filebeat -f";;
   ERROR)   echo "✗ Erro — verifique: journalctl -u filebeat --no-pager ; filebeat test config ; filebeat test output"; exit 1;;
 esac
