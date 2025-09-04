@@ -21,7 +21,9 @@
 # ============================== PARÂMETROS ===============================
 set -e
 
-# VM monitorada
+#set -euo pipefail
+#IFS=$'\n\t'
+
 # VM monitorada
 VM_HOSTNAME="$(hostname -s)"
 VM_IP="$(hostname -I | awk '{print $1}')"
@@ -510,13 +512,6 @@ processors:
 output.logstash:
   hosts: ["$LOGSTASH_HOST:$LOGSTASH_PORT"]
   loadbalance: true
-  # bulk_max_size: $BULK_MAX_SIZE
-  # worker: $WORKER_COUNT
-  # compression_level: $COMPRESSION_LEVEL
-  # timeout: $CONNECTION_TIMEOUT
-  # ssl:
-  #   verification_mode: false
-  #   supported_protocols: ["TLSv1.2", "TLSv1.3"]
   bulk_max_size: $BULK_MAX_SIZE
   worker: $WORKER_COUNT
   compression_level: $COMPRESSION_LEVEL
@@ -576,7 +571,7 @@ if [[ "$SERVICE_NEEDS_RESTART" == "true" ]]; then
   echo "Reiniciando serviço Filebeat..."
   systemctl is-active --quiet filebeat && systemctl stop filebeat || true
   sleep 2
-  pkill -f filebeat >/dev/null 2>&1 || true
+  systemctl kill filebeat 2>/dev/null || true
   systemctl start filebeat
   echo "Verificando inicialização..."
   for i in {1..10}; do
