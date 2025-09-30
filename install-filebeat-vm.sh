@@ -19,16 +19,16 @@
 #   # opcional:
 #   export INDEX_PREFIX=vm
 # ============================== PARÂMETROS ===============================
-set -e
-
-#set -euo pipefail
-#IFS=$'\n\t'
+set -euo pipefail
+IFS=$'\n\t'
 
 # VM monitorada
 VM_HOSTNAME="$(hostname -s)"
 VM_IP="$(hostname -I | awk '{print $1}')"
 VM_ROLE="vm_${VM_HOSTNAME%%[0-9]*}"
-INDEX_PREFIX="${INDEX_PREFIX:-vm}"
+VM_HOSTNAME_CLEAN="${VM_HOSTNAME//-/_}"
+INDEX_PREFIX="${INDEX_PREFIX:-${VM_HOSTNAME_CLEAN}}"
+INDEX_PATTERN="${VM_HOSTNAME_CLEAN}-logs"  # Padrão do índice
 VM_OS="$(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-Ubuntu GNU/Linux}")"
 VM_KERNEL="$(uname -r)"
 
@@ -66,6 +66,15 @@ DOCKER_IGNORE_OLDER_HOURS="${DOCKER_IGNORE_OLDER_HOURS:-24h}"
 # Monitoring (X-Pack) opcional — para stack 100% OSS, deixe como false
 ENABLE_XPACK_MONITORING="${ENABLE_XPACK_MONITORING:-false}"
 
+# ============================== DETECÇÃO DE AMBIENTE ===============================
+CONTAINER_MODE=false
+if [[ -f /.dockerenv ]] || grep -q "docker\|lxc" /proc/1/cgroup 2>/dev/null; then
+  CONTAINER_MODE=true
+  echo "Ambiente container detectado - modo adaptado"
+else
+  echo "Ambiente VM/host físico detectado"
+fi
+
 # Desabilitar prompts interativos
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
@@ -94,6 +103,17 @@ if [[ -f /etc/os-release ]]; then
   DISTRIB_VERSION="$VERSION_ID"
 fi
 echo "Distribuição detectada: $DISTRIB_ID $DISTRIB_VERSION"
+
+echo
+echo "======================================================="
+echo "LEMBRETE: Liberar no firewall:"
+echo "- Saída: $LOGSTASH_HOST:$LOGSTASH_PORT (Logstash)"
+echo "- Saída: $ELASTICSEARCH_HOST:$ELASTICSEARCH_PORT (Elasticsearch)"
+echo "- Entrada: $VM_IP:$FILEBEAT_HTTP_PORT (Métricas)"
+echo "======================================================="
+echo
+read -p "Pressione ENTER para continuar..." -r
+echo
 
 # ============================== CONECTIVIDADE ===============================
 echo "Verificando conectividade com Logstash..."
@@ -273,13 +293,50 @@ fi
 
 # ============================== DETECÇÃO DE SERVIÇOS ===============================
 DOCKER_EXISTS=false
-systemctl list-unit-files 2>/dev/null | grep -q docker.service && { DOCKER_EXISTS=true; echo "Docker detectado"; } || echo "Docker não encontrado"
+DOCKER_LOGS_ACCESSIBLE=false
+
+# Verificar Docker de múltiplas formas
+if systemctl is-enabled docker.service &>/dev/null || \
+   systemctl is-active docker.service &>/dev/null || \
+   command -v docker &>/dev/null || \
+   [ -S /var/run/docker.sock ]; then
+    DOCKER_EXISTS=true
+    echo "Docker detectado"
+
+    # Verificar se há logs acessíveis
+    if [ -d /var/lib/docker/containers ] && \
+       find /var/lib/docker/containers -name "*-json.log" -type f 2>/dev/null | grep -q .; then
+        DOCKER_LOGS_ACCESSIBLE=true
+        echo "Logs Docker acessíveis detectados"
+    else
+        echo "Docker ativo mas logs não acessíveis ainda"
+    fi
+else
+    echo "Docker não encontrado"
+fi
 
 CONTAINERD_EXISTS=false
-systemctl list-unit-files 2>/dev/null | grep -q containerd.service && { CONTAINERD_EXISTS=true; echo "containerd detectado"; } || echo "containerd não encontrado"
+# Verificar containerd de múltiplas formas
+if systemctl is-enabled containerd.service &>/dev/null || \
+   systemctl is-active containerd.service &>/dev/null || \
+   command -v containerd &>/dev/null || \
+   [ -S /run/containerd/containerd.sock ]; then
+    CONTAINERD_EXISTS=true
+    echo "containerd detectado"
+else
+    echo "containerd não encontrado"
+fi
 
+# Determinar se deve habilitar input Docker
+# Habilita se Docker existe E (logs acessíveis OU permissões podem ser ajustadas)
+if [ "$DOCKER_EXISTS" = "true" ]; then
+    ENABLE_DOCKER_INPUT="true"
+else
+    ENABLE_DOCKER_INPUT="false"
+fi
 # ============================== CONFIGURAÇÃO FILEBEAT ===============================
 CONFIG_NEEDS_UPDATE=false
+[ -f "/etc/filebeat/filebeat.yml" ] && rm -fv "/etc/filebeat/filebeat.yml"
 if [[ ! -f /etc/filebeat/filebeat.yml ]]; then
   CONFIG_NEEDS_UPDATE=true
   echo "Arquivo de configuração não existe"
@@ -398,7 +455,7 @@ filebeat.inputs:
 
   # --- Logs de containers Docker ---
   - type: log
-    enabled: ${DOCKER_EXISTS}
+    enabled: $ENABLE_DOCKER_INPUT
     paths:
       - /var/lib/docker/containers/*/*-json.log
     exclude_files: ['\\.gz$']
@@ -422,7 +479,7 @@ filebeat.inputs:
 
   # --- Logs do containerd ---
   - type: log
-    enabled: ${CONTAINERD_EXISTS}
+    enabled: $CONTAINERD_EXISTS
     paths:
       - /var/log/containers/*.log
       - /var/log/containerd/*.log
@@ -516,6 +573,7 @@ output.logstash:
   worker: $WORKER_COUNT
   compression_level: $COMPRESSION_LEVEL
   timeout: $CONNECTION_TIMEOUT
+  ssl.enabled: false
 
 # ============================== Logging do Filebeat ===============================
 logging.level: info
@@ -535,11 +593,16 @@ http:
   host: "${FILEBEAT_HTTP_HOST}"
   port: ${FILEBEAT_HTTP_PORT}
 
-# ============================== Performance ===============================
+# =================================== Performance ===================================
 queue.mem:
   events: $QUEUE_EVENTS
   flush.min_events: $QUEUE_FLUSH_MIN
   flush.timeout: $QUEUE_FLUSH_TIMEOUT
+
+# ========================== Security Bypass para pthread ===========================
+seccomp:
+  default_action: allow
+  no_new_privs: false
 EOF
 
   echo "Configuração aplicada"
@@ -564,18 +627,16 @@ fi
 SERVICE_NEEDS_RESTART=false
 systemctl is-enabled --quiet filebeat 2>/dev/null || { systemctl daemon-reload; systemctl enable filebeat; SERVICE_NEEDS_RESTART=true; }
 [[ "$CONFIG_NEEDS_UPDATE" == "true" || "$FILEBEAT_SERVICE_OK" == "false" ]] && SERVICE_NEEDS_RESTART=true
-# systemctl daemon-reload
-# systemctl enable --now filebeat 2>/dev/null || true
 
 if [[ "$SERVICE_NEEDS_RESTART" == "true" ]]; then
   echo "Reiniciando serviço Filebeat..."
   systemctl is-active --quiet filebeat && systemctl stop filebeat || true
-  sleep 2
+  sleep 5
   systemctl kill filebeat 2>/dev/null || true
   systemctl start filebeat
   echo "Verificando inicialização..."
   for i in {1..10}; do
-    sleep 2
+    sleep 4
     if systemctl is-active --quiet filebeat; then
       echo "Filebeat iniciado (tentativa $i)"; break
     fi
@@ -584,7 +645,7 @@ if [[ "$SERVICE_NEEDS_RESTART" == "true" ]]; then
   done
 else
   # Verificar status
-  sleep 4
+  sleep 5
   if systemctl is-active --quiet filebeat; then
     echo "✓ Filebeat iniciado"
     systemctl status filebeat --no-pager --lines=5
@@ -659,8 +720,14 @@ echo "  - VM: $VM_HOSTNAME ($VM_IP) — Função: $VM_ROLE"
 echo "  - Logstash: $LOGSTASH_HOST:$LOGSTASH_PORT"
 echo "  - Elasticsearch: $ELASTICSEARCH_HOST:$ELASTICSEARCH_PORT"
 echo "  - Ambiente: $ENVIRONMENT / $DATACENTER"
-echo "  - Docker: $([ "$DOCKER_EXISTS" == "true" ] && echo "HABILITADO" || echo "DESABILITADO")"
+echo "  - Docker detectado: $([ "$DOCKER_EXISTS" == "true" ] && echo "SIM" || echo "NÃO")"
+echo "  - Docker input habilitado: $([ "$ENABLE_DOCKER_INPUT" == "true" ] && echo "SIM" || echo "NÃO")"
+echo "  - Docker logs acessíveis: $([ "$DOCKER_LOGS_ACCESSIBLE" == "true" ] && echo "SIM" || echo "NÃO")"
 echo "  - Containerd: $([ "$CONTAINERD_EXISTS" == "true" ] && echo "HABILITADO" || echo "DESABILITADO")"
+echo
+echo "Index e ID pattern"
+echo "  - Index patter: $INDEX_PATTERN-*"
+echo "  - Custom index pattern ID: ${INDEX_PATTERN//-/_}"_pattern
 echo
 echo "Comandos úteis:"
 echo "  - Status: systemctl status filebeat"
@@ -668,6 +735,9 @@ echo "  - Logs: tail -f /var/log/filebeat/filebeat"
 echo "  - Restart: systemctl restart filebeat"
 echo "  - Monitor: /usr/local/bin/check-filebeat.sh"
 echo "  - Métricas: http://$VM_IP:$FILEBEAT_HTTP_PORT/stats"
+echo
+echo "=== Últimas 5 linhas do log ==="
+tail -n 5 /var/log/filebeat/filebeat 2>/dev/null || echo "Log ainda não disponível"
 echo
 case $FINAL_STATUS in
   SUCCESS) echo "✓ Pronto. Script idempotente executado (IBS).";;
