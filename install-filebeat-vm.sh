@@ -115,6 +115,51 @@ echo
 read -p "Pressione ENTER para continuar..." -r
 echo
 
+# ============================== TUNING DO KERNEL ===============================
+configure_kernel_limits() {
+  echo "Verificando limites do kernel inotify..."
+
+  CURRENT_WATCHES=$(sysctl -n fs.inotify.max_user_watches 2>/dev/null || echo 0)
+  CURRENT_INSTANCES=$(sysctl -n fs.inotify.max_user_instances 2>/dev/null || echo 0)
+  CURRENT_QUEUED=$(sysctl -n fs.inotify.max_queued_events 2>/dev/null || echo 0)
+
+  REQUIRED_WATCHES=524288
+  REQUIRED_INSTANCES=512
+  REQUIRED_QUEUED=32768
+
+  NEEDS_UPDATE=false
+  [[ "$CURRENT_WATCHES" -lt "$REQUIRED_WATCHES" ]] && NEEDS_UPDATE=true
+  [[ "$CURRENT_INSTANCES" -lt "$REQUIRED_INSTANCES" ]] && NEEDS_UPDATE=true
+  [[ "$CURRENT_QUEUED" -lt "$REQUIRED_QUEUED" ]] && NEEDS_UPDATE=true
+
+  if [[ "$NEEDS_UPDATE" == "true" ]]; then
+    echo "Aumentando limites do kernel inotify..."
+    sysctl -w fs.inotify.max_user_watches="$REQUIRED_WATCHES" >/dev/null
+    sysctl -w fs.inotify.max_user_instances="$REQUIRED_INSTANCES" >/dev/null
+    sysctl -w fs.inotify.max_queued_events="$REQUIRED_QUEUED" >/dev/null
+
+    if ! grep -q "fs.inotify.max_user_watches" /etc/sysctl.conf 2>/dev/null; then
+      cat >> /etc/sysctl.conf <<EOF
+
+# Limites inotify para monitoramento Filebeat (containers Docker)
+fs.inotify.max_user_watches=$REQUIRED_WATCHES
+fs.inotify.max_user_instances=$REQUIRED_INSTANCES
+fs.inotify.max_queued_events=$REQUIRED_QUEUED
+EOF
+      sysctl -p >/dev/null 2>&1
+      echo "Limites do kernel aplicados e persistidos"
+    else
+      echo "Limites já configurados em /etc/sysctl.conf"
+    fi
+  else
+    echo "Limites do kernel já estão adequados"
+  fi
+}
+
+# ============================== TUNING DO KERNEL ===============================
+configure_kernel_limits
+echo
+
 # ============================== CONECTIVIDADE ===============================
 echo "Verificando conectividade com Logstash..."
 if timeout 5 bash -c "</dev/tcp/$LOGSTASH_HOST/$LOGSTASH_PORT" 2>/dev/null; then
@@ -474,6 +519,14 @@ filebeat.inputs:
     processors:
       - add_docker_metadata:
           host: "unix:///var/run/docker.sock"
+          match_fields: ["log.file.path"]
+          labels.dedot: true
+      - rename:
+          fields:
+            - from: "container.name"
+              to: "service_name"
+          ignore_missing: true
+          fail_on_error: false
       - add_tags:
           tags: ["docker", "container"]
 
