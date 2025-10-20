@@ -382,7 +382,7 @@ chmod 755 /var/lib/filebeat/registry/filebeat 2>/dev/null || true
 chmod 755 /var/lib/filebeat/data 2>/dev/null || true
 
 # ============================== INICIALIZAÇÃO DO REGISTRY (FIX BUG 7.10.2) ===============================
-# Criar arquivos stub se não existirem 
+# Criar arquivos stub se não existirem
 if [[ ! -f /var/lib/filebeat/registry/filebeat/meta.json ]]; then
   echo "Criando meta.json inicial..."
   cat > /var/lib/filebeat/registry/filebeat/meta.json << 'EOFMETA'
@@ -571,9 +571,10 @@ filebeat.inputs:
     paths:
       - /var/lib/docker/containers/*/*-json.log
     exclude_files: ['\\.gz$']
-    json.keys_under_root: true
+    json.keys_under_root: false
     json.add_error_key: true
     json.message_key: log
+    json.overwrite_keys: true
     ignore_older: $DOCKER_IGNORE_OLDER_HOURS
     fields:
       index_name: "$INDEX_PREFIX-docker-logs"
