@@ -57,11 +57,12 @@ QUEUE_EVENTS="${QUEUE_EVENTS:-4096}"
 QUEUE_FLUSH_MIN="${QUEUE_FLUSH_MIN:-512}"
 QUEUE_FLUSH_TIMEOUT="${QUEUE_FLUSH_TIMEOUT:-5s}"
 
-# Log
-LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-7}"
-LOG_MAX_SIZE_MB="${LOG_MAX_SIZE_MB:-10}"
-IGNORE_OLDER_HOURS="${IGNORE_OLDER_HOURS:-48h}"
-DOCKER_IGNORE_OLDER_HOURS="${DOCKER_IGNORE_OLDER_HOURS:-24h}"
+# Log Retention
+LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-14}"                  # +100% capacidade troubleshooting
+LOG_MAX_SIZE_MB="${LOG_MAX_SIZE_MB:-10}"                        # +200% estabilidade rotação/logs (↓ I/O; ↑ desempenho armazenamento)
+# Ignore Older
+IGNORE_OLDER_HOURS="${IGNORE_OLDER_HOURS:-72h}"                 # +50% janela de coleta sistema
+DOCKER_IGNORE_OLDER_HOURS="${DOCKER_IGNORE_OLDER_HOURS:-168h}"  # +600% cobertura containers
 
 # Monitoring (X-Pack) opcional — para stack 100% OSS, deixe como false
 ENABLE_XPACK_MONITORING="${ENABLE_XPACK_MONITORING:-false}"
@@ -335,6 +336,72 @@ if [[ "$PERMISSIONS_UPDATED" == "true" || "$ACL_NEEDS_UPDATE" == "true" ]]; then
 else
   echo "Permissões já estão corretas"
 fi
+
+# ============================== ESTRUTURA DE DIRETÓRIOS DO FILEBEAT ===============================
+echo "Verificando estrutura de diretórios do Filebeat..."
+
+DIRS_NEED_CREATION=false
+
+# Verificar se diretórios não existem
+if [[ ! -d /var/lib/filebeat/registry/filebeat ]]; then
+  DIRS_NEED_CREATION=true
+  echo "Diretório registry não existe"
+fi
+
+if [[ ! -d /var/lib/filebeat/data ]]; then
+  DIRS_NEED_CREATION=true
+  echo "Diretório data não existe"
+fi
+
+# Verificar se registry existe mas está vazio (causa erro de inicialização)
+if [[ -d /var/lib/filebeat/registry/filebeat ]] && [[ -z "$(ls -A /var/lib/filebeat/registry/filebeat 2>/dev/null)" ]]; then
+  DIRS_NEED_CREATION=true
+  echo "Diretório registry existe mas está vazio"
+fi
+
+# Criar/recriar estrutura se necessário
+if [[ "$DIRS_NEED_CREATION" == "true" ]]; then
+  echo "Garantindo estrutura de diretórios do Filebeat..."
+  mkdir -p /var/lib/filebeat/registry/filebeat
+  mkdir -p /var/lib/filebeat/data
+
+  # Definir ownership e permissões
+  chown -R root:root /var/lib/filebeat
+  chmod -R 755 /var/lib/filebeat
+
+  echo "Estrutura de diretórios garantida"
+else
+  echo "Estrutura de diretórios já está correta"
+fi
+
+# Garantir permissões corretas sempre
+chown -R root:root /var/lib/filebeat 2>/dev/null || true
+chmod 755 /var/lib/filebeat 2>/dev/null || true
+chmod 755 /var/lib/filebeat/registry 2>/dev/null || true
+chmod 755 /var/lib/filebeat/registry/filebeat 2>/dev/null || true
+chmod 755 /var/lib/filebeat/data 2>/dev/null || true
+
+# ============================== INICIALIZAÇÃO DO REGISTRY (FIX BUG 7.10.2) ===============================
+# Criar arquivos stub se não existirem 
+if [[ ! -f /var/lib/filebeat/registry/filebeat/meta.json ]]; then
+  echo "Criando meta.json inicial..."
+  cat > /var/lib/filebeat/registry/filebeat/meta.json << 'EOFMETA'
+{"version":"1"}
+EOFMETA
+  chown root:root /var/lib/filebeat/registry/filebeat/meta.json
+  chmod 600 /var/lib/filebeat/registry/filebeat/meta.json
+fi
+
+if [[ ! -f /var/lib/filebeat/registry/filebeat/log.json ]]; then
+  echo "Criando log.json inicial..."
+  cat > /var/lib/filebeat/registry/filebeat/log.json << 'EOFLOG'
+[]
+EOFLOG
+  chown root:root /var/lib/filebeat/registry/filebeat/log.json
+  chmod 600 /var/lib/filebeat/registry/filebeat/log.json
+fi
+
+echo
 
 # ============================== DETECÇÃO DE SERVIÇOS ===============================
 DOCKER_EXISTS=false
