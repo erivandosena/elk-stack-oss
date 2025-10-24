@@ -67,6 +67,14 @@ DOCKER_IGNORE_OLDER_HOURS="${DOCKER_IGNORE_OLDER_HOURS:-168h}"  # +600% cobertur
 # Monitoring (X-Pack) opcional — para stack 100% OSS, deixe como false
 ENABLE_XPACK_MONITORING="${ENABLE_XPACK_MONITORING:-false}"
 
+# IP público (egress/NAT) e faixa para usar em pipelines/k8s/etc
+PUBLIC_IP="${PUBLIC_IP:-$(curl -fsS https://api.ipify.org || curl -fsS ifconfig.me || true)}"
+LB_SRC_RANGE="${LB_SRC_RANGE:-${PUBLIC_IP:-$VM_IP}/32}"
+
+# IP público (egress/NAT) e faixa para usar em pipelines/k8s/etc
+PUBLIC_IP="${PUBLIC_IP:-$(curl -fsS https://api.ipify.org || curl -fsS ifconfig.me || true)}"
+LB_SRC_RANGE="${LB_SRC_RANGE:-${PUBLIC_IP:-$VM_IP}/32}"
+
 # ============================== DETECÇÃO DE AMBIENTE ===============================
 CONTAINER_MODE=false
 if [[ -f /.dockerenv ]] || grep -q "docker\|lxc" /proc/1/cgroup 2>/dev/null; then
@@ -104,13 +112,20 @@ if [[ -f /etc/os-release ]]; then
   DISTRIB_VERSION="$VERSION_ID"
 fi
 echo "Distribuição detectada: $DISTRIB_ID $DISTRIB_VERSION"
+echo "IP privado: $VM_IP"
+echo "IP Publico: ${PUBLIC_IP:-não detectado}"
+echo "Faixa recomendada (LB_SRC_RANGE): ${LB_SRC_RANGE:-indefinido}"
 
 echo
 echo "======================================================="
 echo "LEMBRETE: Liberar no firewall:"
-echo "- Saída: $LOGSTASH_HOST:$LOGSTASH_PORT (Logstash)"
-echo "- Saída: $ELASTICSEARCH_HOST:$ELASTICSEARCH_PORT (Elasticsearch)"
-echo "- Entrada: $VM_IP:$FILEBEAT_HTTP_PORT (Métricas)"
+echo "-> Saída: $LOGSTASH_HOST:$LOGSTASH_PORT (Logstash)"
+echo "-> Saída: $ELASTICSEARCH_HOST:$ELASTICSEARCH_PORT (Elasticsearch)"
+echo "<- Entrada: $VM_IP:$FILEBEAT_HTTP_PORT (Métricas)"
+echo "======================================================="
+echo "Observação:"
+echo "É necessário liberar também o IP do host monitorado em"
+echo "loadBalancerSourceRanges do Service 'logstash-service' (ex.: - ${VM_IP})."
 echo "======================================================="
 echo
 read -p "Pressione ENTER para continuar..." -r
